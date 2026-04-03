@@ -16,7 +16,7 @@ describe('claw skill script', () => {
       runtimePath,
       `#!/bin/sh
 cat >/dev/null
-printf '%s\n' '---NANOCLAW_OUTPUT_START---' '{"status":"success","result":"4","newSessionId":"sess-1"}' '---NANOCLAW_OUTPUT_END---'
+printf '%s\n' '---OPALCLAW_OUTPUT_START---' '{"status":"success","result":"4","newSessionId":"sess-1"}' '---OPALCLAW_OUTPUT_END---'
 sleep 30
 `,
     );
@@ -30,7 +30,7 @@ sleep 30
         encoding: 'utf8',
         env: {
           ...process.env,
-          NANOCLAW_DIR: tempDir,
+          OPALCLAW_DIR: tempDir,
           PATH: `${binDir}:${process.env.PATH || ''}`,
         },
         timeout: 15000,
