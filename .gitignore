@@ -21,6 +21,11 @@ groups/global/*
 # Secrets
 *.keys.json
 .env
+security/cookie-vault.enc
+security/vault-key.env
+security/incident-log.json
+*.pem
+*.key
 
 # Temp files
 .tmp-*

@@ -1,5 +1,7 @@
 import { Channel, NewMessage } from './types.js';
 import { formatLocalTime } from './timezone.js';
+import { interceptOutgoingMessage } from './security/watchdog.js';
+import { logger } from './logger.js';
 
 export function escapeXml(s: string): string {
   if (!s) return '';
@@ -41,11 +43,16 @@ export function formatOutbound(rawText: string): string {
   return text;
 }
 
-export function routeOutbound(
+export async function routeOutbound(
   channels: Channel[],
   jid: string,
   text: string,
 ): Promise<void> {
+  const scan = await interceptOutgoingMessage('system', text, jid);
+  if (!scan.allowed) {
+    logger.warn({ jid }, 'routeOutbound: message blocked by watchdog');
+    return;
+  }
   const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
   if (!channel) throw new Error(`No channel for JID: ${jid}`);
   return channel.sendMessage(jid, text);

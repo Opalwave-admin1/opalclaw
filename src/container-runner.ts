@@ -27,6 +27,7 @@ import {
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+import { readEnvFile } from './env.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
@@ -210,6 +211,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount cookie vault for Webflow browser automation
+  const vaultDir = path.resolve(projectRoot, 'security');
+  if (fs.existsSync(vaultDir)) {
+    mounts.push({
+      hostPath: vaultDir,
+      containerPath: '/workspace/security',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -232,6 +243,32 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Pass custom model endpoint if configured (e.g. MiniMax M2.7 Anthropic-compatible API).
+  // ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, and ANTHROPIC_MODEL are not secrets — they configure the SDK endpoint.
+  // The Claude Agent SDK inside the container reads these automatically.
+  const modelEnv = readEnvFile([
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_MODEL',
+  ]);
+  if (modelEnv.ANTHROPIC_BASE_URL) {
+    args.push('-e', `ANTHROPIC_BASE_URL=${modelEnv.ANTHROPIC_BASE_URL}`);
+    logger.debug(
+      { containerName },
+      `Custom model endpoint: ${modelEnv.ANTHROPIC_BASE_URL}`,
+    );
+  }
+  if (modelEnv.ANTHROPIC_API_KEY) {
+    args.push('-e', `ANTHROPIC_API_KEY=${modelEnv.ANTHROPIC_API_KEY}`);
+  }
+  if (modelEnv.ANTHROPIC_MODEL) {
+    args.push('-e', `ANTHROPIC_MODEL=${modelEnv.ANTHROPIC_MODEL}`);
+    logger.debug(
+      { containerName, model: modelEnv.ANTHROPIC_MODEL },
+      `Custom model: ${modelEnv.ANTHROPIC_MODEL}`,
+    );
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.

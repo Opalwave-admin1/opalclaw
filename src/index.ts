@@ -3,6 +3,11 @@ import path from 'path';
 
 import { OneCLI } from '@onecli-sh/sdk';
 
+import { interceptOutgoingMessage } from './security/watchdog.js';
+import { routeTask } from './router/model-router.js';
+import { shouldPause } from './router/pause-handler.js';
+import { readEnvFile } from './env.js';
+
 import {
   ASSISTANT_NAME,
   DEFAULT_TRIGGER,
@@ -213,6 +218,55 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+/** Map a message + group folder to a pause task type, or null if not high-stakes. */
+function classifyTask(content: string, folder: string): string | null {
+  const text = content.toLowerCase();
+
+  if (folder.includes('webflow')) {
+    if (text.includes('publish')) return 'webflow:publish';
+    if (text.includes('rename') || text.includes('batch'))
+      return 'webflow:batch-rename';
+    if (
+      (text.includes('build') || text.includes('create')) &&
+      text.includes('page')
+    )
+      return 'webflow:page-build';
+  }
+
+  if (folder.includes('clients') || folder.includes('client')) {
+    if (text.includes('invoice') || text.includes('bill'))
+      return 'finance:invoice';
+    if (
+      (text.includes('email') || text.includes('send')) &&
+      (text.includes('client') ||
+        text.includes('okfitt') ||
+        text.includes('noir'))
+    )
+      return 'email:send:client';
+  }
+
+  // Production site writes from any group
+  if (text.includes('68423937cec4fb3017df58d1') || text.includes('okfitt'))
+    return 'site:okfitt:write';
+  if (
+    text.includes('67d5e09b16bdb8fd692518eb') ||
+    text.includes('house of noir') ||
+    text.includes('houseofnoir')
+  )
+    return 'site:hon:write';
+
+  return null;
+}
+
+/** Return the appropriate Slack channel ID for pause notifications. */
+function getPauseChannel(folder: string, env: Record<string, string>): string {
+  if (folder.includes('webflow'))
+    return env.SLACK_CHANNEL_WEBFLOW || env.SLACK_CHANNEL_ALERTS || '';
+  if (folder.includes('client'))
+    return env.SLACK_CHANNEL_CLIENTS || env.SLACK_CHANNEL_ALERTS || '';
+  return env.SLACK_CHANNEL_ALERTS || '';
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -250,7 +304,48 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  let prompt = formatMessages(missedMessages, TIMEZONE);
+
+  // ── Pause-for-review: check before spawning container ─────────────────────
+  const taskType = classifyTask(
+    missedMessages[missedMessages.length - 1].content,
+    group.folder,
+  );
+  if (taskType && shouldPause(taskType)) {
+    logger.info(
+      { group: group.name, taskType },
+      'Pause required before executing',
+    );
+    const env = readEnvFile([
+      'SLACK_CHANNEL_WEBFLOW',
+      'SLACK_CHANNEL_CLIENTS',
+      'SLACK_CHANNEL_ALERTS',
+    ]);
+    const pauseChannel = getPauseChannel(group.folder, env);
+    const result = await routeTask({
+      type: taskType,
+      agentName: group.name,
+      description: missedMessages[missedMessages.length - 1].content.slice(
+        0,
+        200,
+      ),
+      riskLevel: 'high',
+      channelId: pauseChannel,
+    });
+    if (result.status === 'cancelled') {
+      // Advance cursor — user explicitly cancelled, don't re-process
+      lastAgentTimestamp[chatJid] =
+        missedMessages[missedMessages.length - 1].timestamp;
+      saveState();
+      logger.info({ group: group.name }, 'Task cancelled by user reaction');
+      return true;
+    }
+    if (result.status === 'modified' && result.modifiedInstructions) {
+      prompt += `\n\n[User modification]: ${result.modifiedInstructions}`;
+    }
+    // 'executed' → fall through and run agent normally
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -293,8 +388,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+        const scan = await interceptOutgoingMessage(group.name, text, chatJid);
+        if (scan.allowed) {
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -708,14 +806,17 @@ async function main(): Promise<void> {
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (!text) return;
+      const scan = await interceptOutgoingMessage('scheduler', text, jid);
+      if (scan.allowed) await channel.sendMessage(jid, text);
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: async (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      const scan = await interceptOutgoingMessage('ipc', text, jid);
+      if (scan.allowed) return channel.sendMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

@@ -10,6 +10,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import crypto from 'crypto';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -19,6 +20,46 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.OPALCLAW_CHAT_JID!;
 const groupFolder = process.env.OPALCLAW_GROUP_FOLDER!;
 const isMain = process.env.OPALCLAW_IS_MAIN === '1';
+
+// Cookie vault path - mounted from host
+const VAULT_DIR = '/workspace/security';
+const VAULT_KEY_FILE = path.join(VAULT_DIR, 'vault-key.env');
+const VAULT_FILE = path.join(VAULT_DIR, 'cookie-vault.enc');
+
+function getVaultKey(): Buffer | null {
+  try {
+    if (fs.existsSync(VAULT_KEY_FILE)) {
+      return Buffer.from(
+        fs.readFileSync(VAULT_KEY_FILE, 'utf-8').trim(),
+        'hex',
+      );
+    }
+  } catch {}
+  return null;
+}
+
+function getStoredCookies(site: string): object | null {
+  const key = getVaultKey();
+  if (!key) return null;
+
+  try {
+    if (!fs.existsSync(VAULT_FILE)) return null;
+    const store = JSON.parse(fs.readFileSync(VAULT_FILE, 'utf-8'));
+    const entry = store[site];
+    if (!entry) return null;
+
+    const iv = Buffer.from(entry.iv, 'hex');
+    const tag = Buffer.from(entry.tag, 'hex');
+    const data = Buffer.from(entry.data, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    return JSON.parse(
+      decipher.update(data).toString('utf-8') + decipher.final('utf-8'),
+    );
+  } catch {
+    return null;
+  }
+}
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -64,6 +105,32 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+  },
+);
+
+server.tool(
+  'get_webflow_cookies',
+  'Retrieve stored Webflow session cookies for browser automation. Returns cookies that can be passed to Playwright browser context.',
+  {
+    site: z
+      .string()
+      .describe('Site identifier (e.g., "webflow-opalwavedigital")'),
+  },
+  async (args) => {
+    const cookies = getStoredCookies(args.site);
+    if (!cookies) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'No cookies found for site: ' + args.site,
+          },
+        ],
+      };
+    }
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(cookies) }],
+    };
   },
 );
 

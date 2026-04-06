@@ -442,13 +442,17 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? {
-            type: 'preset' as const,
-            preset: 'claude_code' as const,
-            append: globalClaudeMd,
-          }
-        : undefined,
+      systemPrompt: {
+        type: 'preset' as const,
+        preset: 'claude_code' as const,
+        append: [
+          'Be concise. No preamble. No restating the task. Output only what is needed.',
+          'If returning data, use JSON. If drafting text, keep it under 300 words unless the task requires more.',
+          globalClaudeMd,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+      },
       allowedTools: [
         'Bash',
         'Read',
@@ -468,7 +472,7 @@ async function runQuery(
         'ToolSearch',
         'Skill',
         'NotebookEdit',
-        'mcp__opalclaw__*'
+        'mcp__opalclaw__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -483,6 +487,10 @@ async function runQuery(
             OPALCLAW_GROUP_FOLDER: containerInput.groupFolder,
             OPALCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        playwright: {
+          command: 'npx',
+          args: ['-y', '@anthropic/mcp-server-playwright'],
         },
       },
       hooks: {

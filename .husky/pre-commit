@@ -1,1 +1,27 @@
 npm run format:fix
+
+# OpalWave secret scanner — block commits containing credentials
+SECRET_PATTERNS="sk-ant-|ghp_|xoxb-|xapp-|AKIA[0-9A-Z]{16}|PRIVATE KEY"
+
+STAGED=$(git diff --cached --name-only 2>/dev/null)
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+FOUND=$(git diff --cached -- $STAGED | grep "^+" | grep -vE "^(\+\+\+)" | grep -E "$SECRET_PATTERNS" | grep -vE "^(\+.*/.*:.*/|^\+.*\".*:.*/)" | grep -vE "^(\+.*\s*=/.*sk-|^\+.*sk-\[)" || true)
+
+if [ -n "$FOUND" ]; then
+  echo "🚨 BLOCKED: Potential secret detected in staged files."
+  echo "   Pattern matched. Review your staged changes before committing."
+  exit 1
+fi
+
+# Verify sensitive files are in .gitignore
+for SENSITIVE in ".env" "security/vault-key.env" "security/cookie-vault.enc"; do
+  if ! grep -qF "$SENSITIVE" .gitignore 2>/dev/null; then
+    echo "🚨 BLOCKED: $SENSITIVE is not in .gitignore"
+    exit 1
+  fi
+done
+
+exit 0
